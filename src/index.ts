@@ -64,12 +64,14 @@ export function createTimeoutWrapper(options: TimeoutWrapperOptions = {}) {
    * @param fn - The function to wrap
    * @param timeoutHandler - Function to call when timeout is imminent
    * @param userCleanupHandler - Optional function provided by the user to run cleanup logic
+   * @param args - Additional arguments to pass to all functions
    * @returns Promise that resolves with the original function's result or rejects if timeout occurs
    */
   return async <T>(
-    fn: () => Promise<T>,
-    timeoutHandler: () => Promise<void>,
-    userCleanupHandler?: () => Promise<void>
+    fn: (...args: any[]) => Promise<T>,
+    timeoutHandler: (...args: any[]) => Promise<any>,
+    userCleanupHandler?: (...args: any[]) => Promise<void>,
+    ...args: any[]
   ): Promise<T> => {
     if (typeof getRemainingTimeInMillis !== 'function') {
         throw new Error('getRemainingTimeInMillis is required');
@@ -100,7 +102,7 @@ export function createTimeoutWrapper(options: TimeoutWrapperOptions = {}) {
       // Create race condition between the actual function and timeout detection
       return await Promise.race([
         // The actual function execution
-        fn().then(result => {
+        fn(...args).then(result => {
           // Clear the interval when the function completes successfully
           if (intervalId) {
             logger('Function completed successfully, clearing timeout check interval');
@@ -146,17 +148,24 @@ export function createTimeoutWrapper(options: TimeoutWrapperOptions = {}) {
                   logger('Timeout imminent - running user cleanup handler...');
 
                   // Add timeout to user cleanup to ensure it doesn't consume all remaining time
-                  const userCleanupPromise = new Promise<void>(async (resolve, reject) => {
+                  const userCleanupPromise = new Promise<void>((resolve, reject) => {
                     const userCleanupTimeout = setTimeout(() => {
                       logger(`User cleanup handler exceeded allocated time of ${cleanupTimeMs}ms`);
                       reject(new Error('User cleanup handler exceeded allocated time'));
                     }, cleanupTimeMs);
 
                     try {
-                      await userCleanupHandler();
-                      clearTimeout(userCleanupTimeout);
-                      logger('User cleanup handler completed successfully');
-                      resolve();
+                      userCleanupHandler(...args)
+                        .then(() => {
+                          clearTimeout(userCleanupTimeout);
+                          logger('User cleanup handler completed successfully');
+                          resolve();
+                        })
+                        .catch(error => {
+                          clearTimeout(userCleanupTimeout);
+                          logger(`User cleanup handler failed: ${error.message}`);
+                          reject(error);
+                        });
                     } catch (error: any) {
                       clearTimeout(userCleanupTimeout);
                       logger(`User cleanup handler failed: ${error.message}`);
@@ -174,7 +183,7 @@ export function createTimeoutWrapper(options: TimeoutWrapperOptions = {}) {
                 await cleanupPromise
                   .then(async () => {
                     logger('Running system timeout handler...');
-                    await timeoutHandler();
+                    await timeoutHandler(...args);
                     logger('System timeout handler completed successfully');
                     const timeoutError = new Error('Lambda function timeout detected') as TimeoutError;
                     timeoutError.isLambdaTimeout = true;
@@ -228,4 +237,43 @@ export function createTimeoutWrapper(options: TimeoutWrapperOptions = {}) {
       }
     }
   };
+}
+
+/**
+ * Simple timeout wrapper that handles Lambda timeouts with minimal configuration
+ *
+ * @param event - The Lambda event object
+ * @param context - The Lambda context object
+ * @param config - Configuration including run, onCleanup and onTimeout handlers
+ * @returns The result from the run function or timeout handler
+ */
+export function withTimeout<TEvent, TResult>(
+  event: TEvent,
+  context: { getRemainingTimeInMillis: () => number },
+  config: {
+    run: (event: TEvent, context: { getRemainingTimeInMillis: () => number }) => Promise<TResult>;
+    onCleanup?: (event: TEvent, context: { getRemainingTimeInMillis: () => number }) => Promise<void>;
+    onTimeout: (event: TEvent, context: { getRemainingTimeInMillis: () => number }) => Promise<any>;
+    options?: TimeoutWrapperOptions;
+  }
+): Promise<TResult> {
+  // Set up the options with defaults
+  const options = {
+    getRemainingTimeInMillis: context.getRemainingTimeInMillis,
+    safetyMarginMs: 1000,
+    logger: console.log,
+    ...config.options
+  };
+
+  // Create the wrapper with the provided options
+  const wrapper = createTimeoutWrapper(options);
+
+  // Use the wrapper with the provided functions and pass event and context to them
+  return wrapper(
+    () => config.run(event, context),
+    () => config.onTimeout(event, context),
+    config.onCleanup ? () => config.onCleanup!(event, context) : undefined,
+    event,
+    context
+  );
 }

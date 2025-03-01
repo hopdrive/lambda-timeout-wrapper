@@ -5,33 +5,22 @@
  * using the fallback timer mode for local development and testing.
  */
 
-const { createTimeoutWrapper } = require('@hopdrive/lambda-timeout-wrapper');
+const { withTimeout } = require('@hopdrive/lambda-timeout-wrapper');
 
 // This function demonstrates how to test the timeout wrapper locally
 async function runLocalTest() {
   console.log('Starting local test with fallback timer');
 
-  // Create a wrapper with fallback timer mode
-  // (no Lambda context is needed)
-  const wrapper = createTimeoutWrapper({
-    // Enable fallback timer mode
-    isUsingFallbackTimer: true,
-
-    // Set a fixed time limit (10 seconds in this example)
-    getRemainingTimeInMillis: () => 10000,
-
-    // Set a 2 second safety margin
-    safetyMarginMs: 2000,
-
-    // Log messages
-    logger: console.log
-  });
+  // Create a fake context for local testing
+  const fakeContext = {
+    getRemainingTimeInMillis: () => 10000 // 10 second timeout
+  };
 
   try {
-    // Use the wrapper
-    const result = await wrapper(
+    // Use the simplified API with fallback timer mode
+    const result = await withTimeout({}, fakeContext, {
       // Main function - this will either complete or time out
-      async () => {
+      run: async () => {
         console.log('Main function started');
 
         // Simulate a long-running task
@@ -43,18 +32,25 @@ async function runLocalTest() {
         return 'Success! Task completed within time limit';
       },
 
-      // Timeout handler - runs when a timeout is detected
-      async () => {
+      // Cleanup handler - runs first when timeout occurs
+      onCleanup: async () => {
+        console.log('Cleanup handler called - this always runs');
+        // Add cleanup logic here
+      },
+
+      // Timeout handler - runs after cleanup when timeout is detected
+      onTimeout: async () => {
         console.log('Timeout detected!');
         return 'Timeout occurred - handled gracefully';
       },
 
-      // User cleanup handler - optional but should be included for proper usage
-      async () => {
-        console.log('Cleanup handler called - this always runs');
-        // Add cleanup logic here
+      // Optional configuration for fallback timer
+      options: {
+        isUsingFallbackTimer: true,
+        safetyMarginMs: 2000,
+        logger: console.log
       }
-    );
+    });
 
     console.log('Result:', result);
     return result;

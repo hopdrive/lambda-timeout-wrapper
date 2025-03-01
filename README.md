@@ -18,6 +18,8 @@ npm install @hopdrive/lambda-timeout-wrapper
 
 ## Usage
 
+### Traditional API
+
 ```typescript
 import { createTimeoutWrapper } from '@hopdrive/lambda-timeout-wrapper';
 
@@ -46,6 +48,37 @@ const result = await wrapper(
   }
 );
 ```
+
+### Simplified API
+
+```typescript
+import { withTimeout } from '@hopdrive/lambda-timeout-wrapper';
+
+// Direct usage in Lambda handler with minimal configuration
+export const handler = withTimeout(event, context, {
+  // Main function to run
+  run: async () => {
+    // Your main Lambda logic here
+    return { statusCode: 200, body: 'Success' };
+  },
+
+  // Cleanup handler - runs first when timeout occurs
+  onCleanup: async () => {
+    // Close any open resources
+  },
+
+  // Timeout handler - runs after cleanup when timeout is imminent
+  onTimeout: async () => {
+    // Your timeout handling logic
+    return { statusCode: 408, body: 'Request timed out' };
+  }
+});
+```
+
+This ultra-simplified API makes it easier to use the wrapper directly in your Lambda handlers. The wrapper automatically:
+- Gets the remaining time from the Lambda context
+- Sets sensible defaults (safetyMarginMs: 1000, logger: console.log)
+- Handles the proper execution order of handlers when a timeout occurs
 
 ## Configuration
 

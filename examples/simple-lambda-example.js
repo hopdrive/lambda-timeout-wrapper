@@ -5,7 +5,7 @@
  * without any specific framework dependencies.
  */
 
-const { createTimeoutWrapper } = require('@hopdrive/lambda-timeout-wrapper');
+const { withTimeout } = require('@hopdrive/lambda-timeout-wrapper');
 
 // Example of a resource that needs cleanup
 let openResource = null;
@@ -28,70 +28,51 @@ const createResource = async () => {
 };
 
 // Example Lambda handler
-exports.handler = async (event, context) => {
-  // Create the wrapper with Lambda context
-  const wrapper = createTimeoutWrapper({
-    getRemainingTimeInMillis: context.getRemainingTimeInMillis,
-    // Set a 1 second safety margin
-    safetyMarginMs: 1000,
-    logger: console.log
-  });
+exports.handler = (event, context) => withTimeout(event, context, {
+  // Main function
+  run: async (event, context) => {
+    console.log('Main function started');
+    console.log('Processing event:', JSON.stringify(event));
+    console.log('Remaining time:', context.getRemainingTimeInMillis());
 
-  try {
-    // Use the wrapper for your main function logic
-    return await wrapper(
-      // Main function
-      async () => {
-        console.log('Main function started');
+    // Create some resource
+    const resource = await createResource();
 
-        // Create some resource
-        const resource = await createResource();
-
-        // Simulate processing
-        console.log('Processing data...');
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        return {
-          statusCode: 200,
-          body: JSON.stringify({
-            message: 'Process completed successfully',
-            resourceId: resource.id
-          })
-        };
-      },
-
-      // Timeout handler - runs when a timeout is imminent
-      async () => {
-        console.log('Timeout detected, handling gracefully');
-
-        return {
-          statusCode: 408,
-          body: JSON.stringify({
-            message: 'Request timed out',
-            error: 'Operation could not be completed in the allowed time'
-          })
-        };
-      },
-
-      // Cleanup handler - always runs
-      async () => {
-        // Close any open resources
-        if (openResource && openResource.isOpen) {
-          console.log('Cleaning up resources...');
-          await openResource.close();
-        }
-      }
-    );
-  }
-  catch (error) {
-    console.error('Error in Lambda function:', error);
+    // Simulate processing
+    console.log('Processing data...');
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     return {
-      statusCode: 500,
+      statusCode: 200,
       body: JSON.stringify({
-        message: 'Internal server error',
-        error: error.message
+        message: 'Process completed successfully',
+        resourceId: resource.id
+      })
+    };
+  },
+
+  // Cleanup handler - runs first when timeout occurs
+  onCleanup: async (event, context) => {
+    // Close any open resources
+    if (openResource && openResource.isOpen) {
+      console.log('Cleaning up resources...');
+      console.log('Remaining time during cleanup:', context.getRemainingTimeInMillis());
+      await openResource.close();
+    }
+  },
+
+  // Timeout handler - runs after cleanup when timeout is imminent
+  onTimeout: async (event, context) => {
+    console.log('Timeout detected, handling gracefully');
+    console.log('Request path:', event.path);
+    console.log('Final remaining time:', context.getRemainingTimeInMillis());
+
+    return {
+      statusCode: 408,
+      body: JSON.stringify({
+        message: 'Request timed out',
+        error: 'Operation could not be completed in the allowed time'
       })
     };
   }
-};
+});

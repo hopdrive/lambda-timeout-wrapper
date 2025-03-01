@@ -2,7 +2,7 @@
  * Example Netlify function that demonstrates using lambda-timeout-wrapper in TypeScript
  *
  * This example shows how to:
- * 1. Create a timeout wrapper with appropriate configuration
+ * 1. Use the simplified withTimeout API for better readability
  * 2. Implement a main function with long-running operations
  * 3. Add timeout and cleanup handlers
  * 4. Handle the response appropriately
@@ -13,18 +13,7 @@
 import { Handler, HandlerEvent, HandlerContext } from '@netlify/functions';
 
 // Import from the lambda-timeout-wrapper package
-import { createTimeoutWrapper } from '@hopdrive/lambda-timeout-wrapper';
-
-// The TimeoutWrapperOptions interface can be imported from the package
-// or defined manually as shown here for clarity
-interface TimeoutWrapperOptions {
-  safetyMarginMs?: number;
-  checkIntervalMs?: number;
-  cleanupTimeMs?: number;
-  getRemainingTimeInMillis?: () => number;
-  isUsingFallbackTimer?: boolean;
-  logger?: (message: string) => void;
-}
+import { withTimeout } from '@hopdrive/lambda-timeout-wrapper';
 
 // Interface for database connection
 interface DatabaseConnection {
@@ -73,74 +62,50 @@ const runLongQuery = async (): Promise<QueryResults> => {
   return { results: ['item1', 'item2', 'item3'] };
 };
 
-// Main Netlify function handler
-const handler: Handler = async (event: HandlerEvent, context: HandlerContext): Promise<FunctionResponse> => {
-  // Create the wrapper options
-  const wrapperOptions: TimeoutWrapperOptions = {
-    // Get remaining time from Lambda context
-    getRemainingTimeInMillis: () => context.getRemainingTimeInMillis(),
-    // Set a 3-second safety margin (default is 5000ms)
-    safetyMarginMs: 3000,
-    // Log messages for debugging
-    logger: console.log
-  };
+// Main Netlify function handler with simplified withTimeout API
+const handler: Handler = (event: HandlerEvent, context: HandlerContext) =>
+  withTimeout(event, context, {
+    // Main function - this is where your primary logic goes
+    run: async (event: HandlerEvent, context: HandlerContext): Promise<FunctionResponse> => {
+      // Log event details
+      console.log('Processing event with path:', event.path);
+      console.log('Remaining execution time:', context.getRemainingTimeInMillis());
 
-  // Create timeout wrapper with options
-  const wrapper = createTimeoutWrapper(wrapperOptions);
+      // Connect to the database
+      await connectToDatabase();
 
-  try {
-    // Use the wrapper around your function execution
-    const result = await wrapper(
-      // Main function - this is where your primary logic goes
-      async (): Promise<FunctionResponse> => {
-        // Connect to the database
-        await connectToDatabase();
+      // Run a long query that might timeout
+      const queryResults = await runLongQuery();
 
-        // Run a long query that might timeout
-        const queryResults = await runLongQuery();
+      // Process results
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          message: 'Operation completed successfully',
+          data: queryResults
+        })
+      };
+    },
 
-        // Process results
-        return {
-          statusCode: 200,
-          body: JSON.stringify({
-            message: 'Operation completed successfully',
-            data: queryResults
-          })
-        };
-      },
+    // Cleanup handler - runs first when timeout occurs
+    onCleanup: async (event: HandlerEvent, context: HandlerContext): Promise<void> => {
+      // Log the event causing cleanup
+      console.log('Cleaning up from request to path:', event.path);
+      console.log('Remaining time for cleanup:', context.getRemainingTimeInMillis());
 
-      // Timeout handler - runs when timeout is imminent
-      async (): Promise<FunctionResponse> => {
-        console.log('TIMEOUT IMMINENT: Beginning graceful shutdown...');
-        // Add any critical cleanup operations here
-
-        // Return a timeout response to the client
-        return {
-          statusCode: 408,
-          body: JSON.stringify({
-            message: 'Request timeout',
-            error: 'The operation took too long to complete'
-          })
-        };
-      },
-
-      // User cleanup handler - always runs after either success or timeout
-      async (): Promise<void> => {
-        // Close database connection if it exists
-        if (dbConnection && dbConnection.isConnected) {
-          await dbConnection.close();
-        }
+      // Close database connection if it exists
+      if (dbConnection && dbConnection.isConnected) {
+        await dbConnection.close();
       }
-    );
+    },
 
-    // Return the result from the main function
-    return result;
-  }
-  catch (error: any) {
-    console.error('Error in Lambda function:', error);
+    // Timeout handler - runs after cleanup when timeout is imminent
+    onTimeout: async (event: HandlerEvent, context: HandlerContext): Promise<FunctionResponse> => {
+      console.log('TIMEOUT IMMINENT: Beginning graceful shutdown...');
+      console.log('Request path that timed out:', event.path);
+      console.log('Final remaining ms:', context.getRemainingTimeInMillis());
 
-    // Check if it's a timeout error
-    if (error.isLambdaTimeout) {
+      // Return a timeout response to the client
       return {
         statusCode: 408,
         body: JSON.stringify({
@@ -148,17 +113,12 @@ const handler: Handler = async (event: HandlerEvent, context: HandlerContext): P
           error: 'The operation took too long to complete'
         })
       };
-    }
+    },
 
-    // Handle other errors
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        message: 'Internal server error',
-        error: error.message
-      })
-    };
-  }
-};
+    // Optional configuration
+    options: {
+      safetyMarginMs: 3000 // Set a 3-second safety margin (default is 1000ms)
+    }
+  });
 
 export { handler };
